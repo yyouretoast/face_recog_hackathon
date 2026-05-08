@@ -6,6 +6,8 @@ import threading
 import streamlit as st
 import av
 
+_DIR = os.path.dirname(os.path.abspath(__file__))
+
 st.set_page_config(page_title="DEBI Face Recognition", page_icon="👤", layout="wide")
 
 # ─── Load DeepFace with caching so UI doesn't freeze ────────────────────────
@@ -23,7 +25,7 @@ def load_deepface_model():
 DeepFace = load_deepface_model()
 
 # ─── Database helpers ────────────────────────────────────────────────────────
-DATABASE_FILE = 'database.json'
+DATABASE_FILE = os.path.join(_DIR, 'database.json')
 
 def load_database():
     try:

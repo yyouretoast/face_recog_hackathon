@@ -1,26 +1,48 @@
-name: Sync to Hugging Face Hub
+name: CI/CD Pipeline
+
 on:
   push:
     branches: [main]
-  # to run this workflow manually from the Actions tab
   workflow_dispatch:
 
 jobs:
-  sync-to-hub:
+  # ── CI: Test & Lint ──────────────────────────────────────────────────────
+  ci:
+    name: CI - Lint & Verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install flake8
+
+      - name: Syntax check
+        run: python -m py_compile app.py
+
+      - name: Lint with flake8
+        run: flake8 app.py --max-line-length=120 --ignore=E501,W503,E302,E303,W291,W292,E261,E262,E265,E266,E128,E124 --exit-zero
+
+  # ── CD: Deploy to Hugging Face ───────────────────────────────────────────
+  cd:
+    name: CD - Deploy to Hugging Face
+    needs: ci
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
         with:
           fetch-depth: 0
           lfs: true
-      - name: Push to hub
+
+      - name: Push to Hugging Face Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          # Remove the image file so it doesn't trigger Hugging Face's binary file error
           rm -f yassin.jpg
-          
-          # Create a fresh git history so previous commits with the image are erased
           git config --global user.email "action@github.com"
           git config --global user.name "GitHub Action"
           git checkout --orphan hf-deploy
