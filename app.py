@@ -50,13 +50,9 @@ st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap');
     
-    html, body, [class*="css"] {
+    /* Base fonts */
+    html, body {
         font-family: 'Outfit', sans-serif;
-    }
-    
-    .stApp {
-        background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
-        color: #e2e8f0;
     }
     
     h1 {
