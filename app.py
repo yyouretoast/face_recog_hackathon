@@ -5,83 +5,95 @@ import os
 import threading
 import streamlit as st
 import av
+import face_recognition
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 
 st.set_page_config(page_title="DEBI Face Recognition", page_icon="👤", layout="wide")
-
-# ─── Load DeepFace with caching so UI doesn't freeze ────────────────────────
-@st.cache_resource(show_spinner="🧠 Loading Deep Learning models...")
-def load_deepface_model():
-    from deepface import DeepFace
-    # Pre-warm Facenet so first inference isn't slow
-    dummy = np.zeros((160, 160, 3), dtype=np.uint8)
-    try:
-        DeepFace.represent(dummy, model_name='Facenet', enforce_detection=False)
-    except Exception:
-        pass
-    return DeepFace
-
-DeepFace = load_deepface_model()
 
 # ─── Database helpers ────────────────────────────────────────────────────────
 DATABASE_FILE = os.path.join(_DIR, 'database.json')
 
 def load_database():
     try:
+        if not os.path.exists(DATABASE_FILE):
+            return [], [], []
         with open(DATABASE_FILE, 'r') as f:
             data = json.load(f)
         known_embeddings = [np.array(p['embedding']) for p in data]
         known_names = [p['name'] for p in data]
         return data, known_embeddings, known_names
-    except Exception:
+    except Exception as e:
+        st.error(f"Error loading database: {e}")
         return [], [], []
 
 def save_to_database(name, embedding):
     try:
-        with open(DATABASE_FILE, 'r') as f:
-            database = json.load(f)
-    except Exception:
         database = []
-    database.append({'name': name, 'embedding': embedding.tolist()})
-    with open(DATABASE_FILE, 'w') as f:
-        json.dump(database, f)
+        if os.path.exists(DATABASE_FILE):
+            with open(DATABASE_FILE, 'r') as f:
+                database = json.load(f)
 
-def find_match(embedding, known_embeddings, known_names, threshold=0.8):
+        database.append({'name': name, 'embedding': embedding.tolist()})
+        with open(DATABASE_FILE, 'w') as f:
+            json.dump(database, f)
+    except Exception as e:
+        st.error(f"Error saving to database: {e}")
+
+def clear_database():
+    try:
+        with open(DATABASE_FILE, 'w') as f:
+            json.dump([], f)
+        st.success("🗑️ Database cleared!")
+    except Exception as e:
+        st.error(f"Error clearing database: {e}")
+
+def find_match(embedding, known_embeddings, known_names, threshold=0.6):
     if not known_embeddings:
         return "Unknown", 0
-    embedding = np.array(embedding)
-    distances = [np.linalg.norm(embedding - k) for k in known_embeddings]
-    min_dist = min(distances)
+
+    # Use face_recognition distance (Euclidean)
+    distances = face_recognition.face_distance([embedding], known_embeddings)[0]
+    min_dist = np.min(distances)
+    best_name = known_names[np.argmin(distances)]
+
     if min_dist < threshold:
-        return known_names[np.argmin(distances)], round((1 - min_dist) * 100, 1)
+        # Convert distance to a pseudo-confidence percentage
+        confidence = round((1 - (min_dist / threshold)) * 100, 1) if min_dist < threshold else 0
+        return best_name, max(0, confidence)
+
     return "Unknown", 0
 
 # ─── Shared processing function ─────────────────────────────────────────────
-def process_image(img):
+def process_image(img, threshold=0.6):
     """Detect faces, match embeddings, return annotated image + results."""
     _, known_embeddings, known_names = load_database()
     results = []
     annotated = img.copy()
+
+    # face_recognition requires RGB
+    rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
     try:
-        faces = DeepFace.extract_faces(img, enforce_detection=False)
-        for face in faces:
-            x, y = face['facial_area']['x'], face['facial_area']['y']
-            w, h = face['facial_area']['w'], face['facial_area']['h']
+        face_locations = face_recognition.face_locations(rgb_img)
+        face_encodings = face_recognition.face_encodings(rgb_img, known_face_locations=face_locations)
+
+        for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
+            # Convert (top, right, bottom, left) to (x, y, w, h)
+            x, y, w, h = left, top, right - left, bottom - top
+
             if w < 20 or h < 20:
                 continue
-            face_img = img[y:y+h, x:x+w]
-            try:
-                emb = DeepFace.represent(face_img, model_name='Facenet', enforce_detection=False)[0]['embedding']
-                name, confidence = find_match(emb, known_embeddings, known_names)
-            except Exception:
-                name, confidence = "Unknown", 0
+
+            name, confidence = find_match(face_encoding, known_embeddings, known_names, threshold)
             results.append({"name": name, "confidence": confidence})
+
             # Draw bounding box
             color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
             label = f"{name} ({confidence}%)" if name != "Unknown" else "Unknown"
             cv2.rectangle(annotated, (x, y), (x+w, y+h), color, 3)
-            # Label background inside the box (hackathon requirement)
+
+            # Label background inside the box
             lbl_sz = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
             cv2.rectangle(annotated, (x, y), (x + lbl_sz[0] + 10, y + lbl_sz[1] + 15), color, -1)
             cv2.putText(annotated, label, (x + 5, y + lbl_sz[1] + 8),
@@ -124,6 +136,13 @@ st.markdown("<p class='subtitle'>Real-time Face Detection &amp; Recognition · D
 # ─── Sidebar: Database Management ───────────────────────────────────────────
 with st.sidebar:
     st.header("👤 Database")
+
+    # Sensitivity Slider
+    st.subheader("⚙️ Tuning")
+    threshold = st.slider("Recognition Sensitivity", 0.1, 1.0, 0.6, 0.05,
+                         help="Lower = Stricter (Higher accuracy), Higher = Looser (More detections)")
+
+    st.divider()
     st.caption("Add faces to the recognition database")
     uploaded_file = st.file_uploader("Upload a face image", type=["jpg", "jpeg", "png"])
     new_name = st.text_input("Person's Name")
@@ -133,12 +152,16 @@ with st.sidebar:
                 file_bytes = np.frombuffer(uploaded_file.read(), np.uint8)
                 img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
                 try:
-                    emb = DeepFace.represent(img, model_name='Facenet', enforce_detection=True)[0]['embedding']
-                    save_to_database(new_name, np.array(emb))
-                    st.success(f"✅ Added **{new_name}**!")
-                    st.rerun()
+                    rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    encodings = face_recognition.face_encodings(rgb_img)
+                    if len(encodings) > 0:
+                        save_to_database(new_name, np.array(encodings[0]))
+                        st.success(f"✅ Added **{new_name}**!")
+                        st.rerun()
+                    else:
+                        st.error("❌ No face detected. Try another image.")
                 except Exception:
-                    st.error("❌ No face detected. Try another image.")
+                    st.error("❌ Error processing image.")
         else:
             st.warning("Upload an image and enter a name.")
     st.divider()
@@ -150,13 +173,17 @@ with st.sidebar:
             names[entry['name']] = names.get(entry['name'], 0) + 1
         for name, count in names.items():
             st.write(f"👤 **{name}** ({count} embedding{'s' if count > 1 else ''})")
+
+        if st.button("🗑️ Clear All Faces"):
+            clear_database()
+            st.rerun()
     else:
         st.info("No faces registered yet.")
 
 # ─── Main Content ────────────────────────────────────────────────────────────
 tab1, tab2 = st.tabs(["📸 Snapshot Mode", "🎥 Live Mode"])
 
-# ── Tab 1: Snapshot Mode (always reliable) ───────────────────────────────────
+# ── Tab 1: Snapshot Mode ───────────────────────────────────
 with tab1:
     st.caption("Take a photo or upload an image to recognize faces instantly.")
     col1, col2 = st.columns([1, 1])
@@ -176,9 +203,9 @@ with tab1:
     with col2:
         if img_source is not None:
             with st.spinner("🔍 Analyzing faces..."):
-                annotated, results = process_image(img_source)
+                annotated, results = process_image(img_source, threshold)
                 st.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
-                         caption="Recognition Results", use_container_width=True)
+                             caption="Recognition Results", use_container_width=True)
                 if results:
                     for r in results:
                         icon = "✅" if r["name"] != "Unknown" else "❓"
@@ -189,7 +216,7 @@ with tab1:
         else:
             st.info("👈 Take a photo or upload an image to begin.")
 
-# ── Tab 2: Live Mode (WebRTC bonus) ─────────────────────────────────────────
+# ── Tab 2: Live Mode ─────────────────────────────────────────
 with tab2:
     st.caption("Real-time recognition via webcam. Requires a stable connection.")
     try:
@@ -206,18 +233,15 @@ with tab2:
                 cnt = state["count"]
             if cnt % 15 == 0:
                 try:
-                    faces = DeepFace.extract_faces(img, enforce_detection=False)
+                    rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    face_locations = face_recognition.face_locations(rgb_img)
+                    face_encodings = face_recognition.face_encodings(rgb_img, known_face_locations=face_locations)
+
                     new_res = []
-                    for f in faces:
-                        x, y = f['facial_area']['x'], f['facial_area']['y']
-                        w, h = f['facial_area']['w'], f['facial_area']['h']
-                        if w < 20 or h < 20:
-                            continue
-                        try:
-                            emb = DeepFace.represent(img[y:y+h, x:x+w], model_name='Facenet', enforce_detection=False)[0]['embedding']
-                            nm, cf = find_match(emb, known_emb, known_nm)
-                        except Exception:
-                            nm, cf = "Unknown", 0
+                    for (top, right, bottom, left), encoding in zip(face_locations, face_encodings):
+                        # Translate to (x, y, w, h) for the state
+                        x, y, w, h = left, top, right - left, bottom - top
+                        nm, cf = find_match(encoding, known_emb, known_nm, threshold)
                         new_res.append((x, y, w, h, nm, cf))
                     with lock:
                         state["results"] = new_res

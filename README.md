@@ -40,9 +40,16 @@ Real-time face detection and recognition platform built for the **DEBI Hackathon
 4. If the distance is below the threshold (0.8), the person is recognized
 5. A bounding box is drawn with the person's name inside (or "Unknown")
 
-## Run Locally
+## 🏆 Hackathon Compliance (DEBI 2026)
 
-```bash
-pip install -r requirements.txt
-streamlit run app.py
-```
+This project is built according to the official Debi Hackathon guidelines:
+
+- [x] **Device Camera Access**: Implemented via `st.camera_input` (Snapshot) and `streamlit-webrtc` (Live).
+- [x] **Face Recognition**: Uses `face_recognition` (dlib-based) for high-accuracy embeddings.
+- [x] **Comparison Engine**: Compares detected embeddings against a pre-stored `database.json` file.
+- [x] **Visual Feedback**:
+    - ✅ **Recognized**: Green boundary box with name and confidence percentage.
+    - ❓ **Unknown**: Red boundary box labeled "Unknown".
+- [x] **Database**: Structured JSON storage associating 128D embeddings with names.
+- [x] **Deployment**: Successfully deployed to Hugging Face Spaces.
+- [x] **CI/CD**: Fully automated pipeline via GitHub Actions (Lint $\rightarrow$ Verify $\rightarrow$ Deploy).

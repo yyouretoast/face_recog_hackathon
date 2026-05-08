@@ -1,8 +1,7 @@
-deepface
+face-recognition
 opencv-python-headless
 streamlit
 streamlit-webrtc
 av
 numpy
-tf-keras
 tornado
