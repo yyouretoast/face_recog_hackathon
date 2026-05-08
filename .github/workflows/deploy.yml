@@ -16,4 +16,4 @@ jobs:
       - name: Push to hub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: git push https://yyouretoast:$HF_TOKEN@huggingface.co/spaces/yyouretoast/debi_face_recog_hackathon main
+        run: git push --force https://yyouretoast:$HF_TOKEN@huggingface.co/spaces/yyouretoast/debi_face_recog_hackathon main
