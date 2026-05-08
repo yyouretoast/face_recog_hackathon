@@ -2,16 +2,27 @@ import cv2
 import json
 import numpy as np
 import os
+import threading
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 import av
 
 st.set_page_config(page_title="DEBI Face Recognition", page_icon="👤", layout="wide")
 
-# Import DeepFace AFTER page config so Streamlit UI doesn't time out during heavy TensorFlow loading
-with st.spinner("Initializing Deep Learning models... This may take a few moments on the first run."):
+# ─── Load DeepFace with caching so UI doesn't freeze ────────────────────────
+@st.cache_resource(show_spinner="🧠 Loading Deep Learning models...")
+def load_deepface_model():
     from deepface import DeepFace
+    # Pre-warm Facenet so first inference isn't slow
+    dummy = np.zeros((160, 160, 3), dtype=np.uint8)
+    try:
+        DeepFace.represent(dummy, model_name='Facenet', enforce_detection=False)
+    except Exception:
+        pass
+    return DeepFace
 
+DeepFace = load_deepface_model()
+
+# ─── Database helpers ────────────────────────────────────────────────────────
 DATABASE_FILE = 'database.json'
 
 def load_database():
@@ -21,181 +32,218 @@ def load_database():
         known_embeddings = [np.array(p['embedding']) for p in data]
         known_names = [p['name'] for p in data]
         return data, known_embeddings, known_names
-    except:
+    except Exception:
         return [], [], []
 
 def save_to_database(name, embedding):
     try:
         with open(DATABASE_FILE, 'r') as f:
             database = json.load(f)
-    except:
+    except Exception:
         database = []
-    
     database.append({'name': name, 'embedding': embedding.tolist()})
-    
     with open(DATABASE_FILE, 'w') as f:
         json.dump(database, f)
 
 def find_match(embedding, known_embeddings, known_names, threshold=0.8):
     if not known_embeddings:
         return "Unknown", 0
-    
     embedding = np.array(embedding)
     distances = [np.linalg.norm(embedding - k) for k in known_embeddings]
     min_dist = min(distances)
-    
     if min_dist < threshold:
         return known_names[np.argmin(distances)], round((1 - min_dist) * 100, 1)
     return "Unknown", 0
 
-# Custom CSS for Premium Design Aesthetics
-st.markdown("""
-<style>
-    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap');
-    
-    /* Base fonts */
-    html, body {
-        font-family: 'Outfit', sans-serif;
-    }
-    
-    h1 {
-        background: -webkit-linear-gradient(45deg, #38bdf8, #818cf8);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        font-weight: 700 !important;
-        text-align: center;
-        margin-bottom: 0.5rem !important;
-        font-size: 3rem !important;
-    }
-    
-    .subtitle {
-        text-align: center;
-        color: #94a3b8;
-        font-size: 1.2rem;
-        margin-bottom: 2rem;
-    }
-    
-    /* Card-like styling for columns */
-    div[data-testid="column"] {
-        background: rgba(30, 41, 59, 0.5);
-        backdrop-filter: blur(10px);
-        border-radius: 15px;
-        padding: 20px;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
-        transition: transform 0.3s ease;
-    }
-    
-    div[data-testid="column"]:hover {
-        transform: translateY(-5px);
-    }
-
-    .stButton > button {
-        width: 100%;
-        background: linear-gradient(90deg, #6366f1, #8b5cf6);
-        color: white;
-        border: none;
-        border-radius: 8px;
-        padding: 0.5rem 1rem;
-        font-weight: 600;
-        transition: all 0.3s ease;
-    }
-    
-    .stButton > button:hover {
-        background: linear-gradient(90deg, #4f46e5, #7c3aed);
-        box-shadow: 0 0 15px rgba(139, 92, 246, 0.5);
-        transform: scale(1.02);
-    }
-</style>
-""", unsafe_allow_html=True)
-
-st.markdown("<h1>DEBI Face Recognition App</h1>", unsafe_allow_html=True)
-st.markdown("<p class='subtitle'>Real-time Face Detection & Recognition Platform built for the DEBI Hackathon 2026</p>", unsafe_allow_html=True)
-
-class FaceRecognizer(VideoProcessorBase):
-    def __init__(self):
-        self.frame_count = 0
-        self.current_results = []
-        _, self.known_embeddings, self.known_names = load_database()
-
-    def recv(self, frame):
-        img = frame.to_ndarray(format="bgr24")
-        
-        self.frame_count += 1
-        
-        # Process every 5th frame for performance
-        if self.frame_count % 5 == 0:
+# ─── Shared processing function ─────────────────────────────────────────────
+def process_image(img):
+    """Detect faces, match embeddings, return annotated image + results."""
+    _, known_embeddings, known_names = load_database()
+    results = []
+    annotated = img.copy()
+    try:
+        faces = DeepFace.extract_faces(img, enforce_detection=False)
+        for face in faces:
+            x, y = face['facial_area']['x'], face['facial_area']['y']
+            w, h = face['facial_area']['w'], face['facial_area']['h']
+            if w < 20 or h < 20:
+                continue
+            face_img = img[y:y+h, x:x+w]
             try:
-                faces = DeepFace.extract_faces(img, enforce_detection=False)
-                self.current_results = []
-                
-                for face in faces:
-                    x = face['facial_area']['x']
-                    y = face['facial_area']['y']
-                    w = face['facial_area']['w']
-                    h = face['facial_area']['h']
-                    
-                    face_img = img[y:y+h, x:x+w]
-                    
-                    try:
-                        embedding = DeepFace.represent(face_img, model_name='Facenet', enforce_detection=False)[0]['embedding']
-                        name, confidence = find_match(embedding, self.known_embeddings, self.known_names)
-                    except:
-                        name, confidence = "Unknown", 0
-                        
-                    self.current_results.append((x, y, w, h, name, confidence))
-            except:
-                pass
-                
-        for (x, y, w, h, name, confidence) in self.current_results:
+                emb = DeepFace.represent(face_img, model_name='Facenet', enforce_detection=False)[0]['embedding']
+                name, confidence = find_match(emb, known_embeddings, known_names)
+            except Exception:
+                name, confidence = "Unknown", 0
+            results.append({"name": name, "confidence": confidence})
+            # Draw bounding box
             color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
             label = f"{name} ({confidence}%)" if name != "Unknown" else "Unknown"
-            cv2.rectangle(img, (x, y), (x+w, y+h), color, 2)
-            # Display text inside the box as per hackathon guidelines
-            cv2.putText(img, label, (x + 5, y + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-            
-        return av.VideoFrame.from_ndarray(img, format="bgr24")
+            cv2.rectangle(annotated, (x, y), (x+w, y+h), color, 3)
+            # Label background inside the box (hackathon requirement)
+            lbl_sz = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+            cv2.rectangle(annotated, (x, y), (x + lbl_sz[0] + 10, y + lbl_sz[1] + 15), color, -1)
+            cv2.putText(annotated, label, (x + 5, y + lbl_sz[1] + 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    except Exception:
+        pass
+    return annotated, results
 
-col1, col2 = st.columns([2, 1])
+# ─── Custom CSS ──────────────────────────────────────────────────────────────
+st.markdown("""<style>
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap');
+html, body { font-family: 'Outfit', sans-serif; }
+h1 {
+    background: -webkit-linear-gradient(45deg, #38bdf8, #818cf8);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    font-weight: 700 !important;
+    text-align: center;
+    font-size: 2.5rem !important;
+}
+.subtitle { text-align: center; color: #94a3b8; font-size: 1.1rem; margin-bottom: 2rem; }
+.stButton > button {
+    width: 100%;
+    background: linear-gradient(90deg, #6366f1, #8b5cf6);
+    color: white; border: none; border-radius: 8px;
+    padding: 0.6rem 1rem; font-weight: 600;
+    transition: all 0.3s ease;
+}
+.stButton > button:hover {
+    background: linear-gradient(90deg, #4f46e5, #7c3aed);
+    box-shadow: 0 0 20px rgba(139, 92, 246, 0.4);
+    transform: scale(1.02);
+}
+</style>""", unsafe_allow_html=True)
 
-with col1:
-    st.subheader("Live Camera Feed")
-    webrtc_streamer(
-        key="face-recognition",
-        video_processor_factory=FaceRecognizer,
-        rtc_configuration=RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
-    )
+# ─── Header ──────────────────────────────────────────────────────────────────
+st.markdown("<h1>DEBI Face Recognition</h1>", unsafe_allow_html=True)
+st.markdown("<p class='subtitle'>Real-time Face Detection &amp; Recognition · DEBI Hackathon 2026</p>", unsafe_allow_html=True)
 
-with col2:
-    st.subheader("Database Management")
-    st.write("Add a new person to the database by uploading their image.")
-    
-    uploaded_file = st.file_uploader("Upload Image", type=["jpg", "jpeg", "png"])
+# ─── Sidebar: Database Management ───────────────────────────────────────────
+with st.sidebar:
+    st.header("👤 Database")
+    st.caption("Add faces to the recognition database")
+    uploaded_file = st.file_uploader("Upload a face image", type=["jpg", "jpeg", "png"])
     new_name = st.text_input("Person's Name")
-    
-    if st.button("Add to Database"):
+    if st.button("➕ Add to Database"):
         if uploaded_file is not None and new_name:
-            with st.spinner("Processing image..."):
-                with open("temp.jpg", "wb") as f:
-                    f.write(uploaded_file.getbuffer())
-                    
+            with st.spinner("Extracting face embedding..."):
+                file_bytes = np.frombuffer(uploaded_file.read(), np.uint8)
+                img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
                 try:
-                    embedding = DeepFace.represent("temp.jpg", model_name='Facenet', enforce_detection=True)[0]['embedding']
-                    save_to_database(new_name, np.array(embedding))
-                    st.success(f"✅ Successfully added {new_name} to the database! Please restart the video stream to apply changes.")
-                except Exception as e:
-                    st.error(f"❌ Could not detect a face in the image. Please try another image.")
-                
-                if os.path.exists("temp.jpg"):
-                    os.remove("temp.jpg")
+                    emb = DeepFace.represent(img, model_name='Facenet', enforce_detection=True)[0]['embedding']
+                    save_to_database(new_name, np.array(emb))
+                    st.success(f"✅ Added **{new_name}**!")
+                    st.rerun()
+                except Exception:
+                    st.error("❌ No face detected. Try another image.")
         else:
-            st.warning("⚠️ Please upload an image and enter a name.")
-            
+            st.warning("Upload an image and enter a name.")
     st.divider()
-    st.write("Current Database Entries:")
+    st.subheader("Registered Faces")
     database, _, _ = load_database()
     if database:
+        names = {}
         for entry in database:
-            st.write(f"- 👤 {entry['name']}")
+            names[entry['name']] = names.get(entry['name'], 0) + 1
+        for name, count in names.items():
+            st.write(f"👤 **{name}** ({count} embedding{'s' if count > 1 else ''})")
     else:
-        st.write("Database is empty.")
+        st.info("No faces registered yet.")
+
+# ─── Main Content ────────────────────────────────────────────────────────────
+tab1, tab2 = st.tabs(["📸 Snapshot Mode", "🎥 Live Mode"])
+
+# ── Tab 1: Snapshot Mode (always reliable) ───────────────────────────────────
+with tab1:
+    st.caption("Take a photo or upload an image to recognize faces instantly.")
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        input_method = st.radio("Input", ["📷 Camera", "📁 Upload"], horizontal=True, label_visibility="collapsed")
+        img_source = None
+        if input_method == "📷 Camera":
+            camera_photo = st.camera_input("Take a photo")
+            if camera_photo:
+                file_bytes = np.frombuffer(camera_photo.getvalue(), np.uint8)
+                img_source = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        else:
+            uploaded = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"], key="snap")
+            if uploaded:
+                file_bytes = np.frombuffer(uploaded.read(), np.uint8)
+                img_source = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+    with col2:
+        if img_source is not None:
+            with st.spinner("🔍 Analyzing faces..."):
+                annotated, results = process_image(img_source)
+                st.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
+                         caption="Recognition Results", use_container_width=True)
+                if results:
+                    for r in results:
+                        icon = "✅" if r["name"] != "Unknown" else "❓"
+                        conf = f" — {r['confidence']}% match" if r["name"] != "Unknown" else ""
+                        st.markdown(f"{icon} **{r['name']}**{conf}")
+                else:
+                    st.info("No faces detected.")
+        else:
+            st.info("👈 Take a photo or upload an image to begin.")
+
+# ── Tab 2: Live Mode (WebRTC bonus) ─────────────────────────────────────────
+with tab2:
+    st.caption("Real-time recognition via webcam. Requires a stable connection.")
+    try:
+        from streamlit_webrtc import webrtc_streamer
+
+        _, known_emb, known_nm = load_database()
+        state = {"count": 0, "results": []}
+        lock = threading.Lock()
+
+        def video_callback(frame):
+            img = frame.to_ndarray(format="bgr24")
+            with lock:
+                state["count"] += 1
+                cnt = state["count"]
+            if cnt % 15 == 0:
+                try:
+                    faces = DeepFace.extract_faces(img, enforce_detection=False)
+                    new_res = []
+                    for f in faces:
+                        x, y = f['facial_area']['x'], f['facial_area']['y']
+                        w, h = f['facial_area']['w'], f['facial_area']['h']
+                        if w < 20 or h < 20:
+                            continue
+                        try:
+                            emb = DeepFace.represent(img[y:y+h, x:x+w], model_name='Facenet', enforce_detection=False)[0]['embedding']
+                            nm, cf = find_match(emb, known_emb, known_nm)
+                        except Exception:
+                            nm, cf = "Unknown", 0
+                        new_res.append((x, y, w, h, nm, cf))
+                    with lock:
+                        state["results"] = new_res
+                except Exception:
+                    pass
+            with lock:
+                cur = list(state["results"])
+            for (x, y, w, h, nm, cf) in cur:
+                color = (0, 255, 0) if nm != "Unknown" else (0, 0, 255)
+                label = f"{nm} ({cf}%)" if nm != "Unknown" else "Unknown"
+                cv2.rectangle(img, (x, y), (x+w, y+h), color, 3)
+                lsz = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+                cv2.rectangle(img, (x, y), (x + lsz[0] + 10, y + lsz[1] + 15), color, -1)
+                cv2.putText(img, label, (x + 5, y + lsz[1] + 8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            return av.VideoFrame.from_ndarray(img, format="bgr24")
+
+        webrtc_streamer(
+            key="live",
+            video_frame_callback=video_callback,
+            rtc_configuration={"iceServers": [
+                {"urls": ["stun:stun.l.google.com:19302"]},
+                {"urls": ["stun:stun1.l.google.com:19302"]},
+            ]},
+            media_stream_constraints={"video": True, "audio": False},
+        )
+        st.caption("💡 If video doesn't connect, use Snapshot Mode instead.")
+    except ImportError:
+        st.warning("Live mode unavailable. Use Snapshot Mode.")
+    except Exception as e:
+        st.error(f"Live mode error: {e}")
