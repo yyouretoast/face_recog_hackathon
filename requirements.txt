@@ -1,4 +1,7 @@
-face_recognition
-opencv-python
+deepface
+opencv-python-headless
 streamlit
+streamlit-webrtc
+av
 numpy
+tf-keras
