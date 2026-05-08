@@ -16,4 +16,14 @@ jobs:
       - name: Push to hub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: git push --force https://yyouretoast:$HF_TOKEN@huggingface.co/spaces/yyouretoast/debi_face_recog_hackathon main
+        run: |
+          # Remove the image file so it doesn't trigger Hugging Face's binary file error
+          rm -f yassin.jpg
+          
+          # Create a fresh git history so previous commits with the image are erased
+          git config --global user.email "action@github.com"
+          git config --global user.name "GitHub Action"
+          git checkout --orphan hf-deploy
+          git add .
+          git commit -m "Deploy to Hugging Face Space"
+          git push --force https://yyouretoast:$HF_TOKEN@huggingface.co/spaces/yyouretoast/debi_face_recog_hackathon hf-deploy:main
