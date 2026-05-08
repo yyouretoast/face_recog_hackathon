@@ -1,11 +1,16 @@
 import cv2
 import json
 import numpy as np
-from deepface import DeepFace
 import os
 import streamlit as st
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 import av
+
+st.set_page_config(page_title="DEBI Face Recognition", page_icon="👤", layout="wide")
+
+# Import DeepFace AFTER page config so Streamlit UI doesn't time out during heavy TensorFlow loading
+with st.spinner("Initializing Deep Learning models... This may take a few moments on the first run."):
+    from deepface import DeepFace
 
 DATABASE_FILE = 'database.json'
 
@@ -42,8 +47,6 @@ def find_match(embedding, known_embeddings, known_names, threshold=0.8):
     if min_dist < threshold:
         return known_names[np.argmin(distances)], round((1 - min_dist) * 100, 1)
     return "Unknown", 0
-
-st.set_page_config(page_title="DEBI Face Recognition", page_icon="👤", layout="wide")
 
 # Custom CSS for Premium Design Aesthetics
 st.markdown("""
